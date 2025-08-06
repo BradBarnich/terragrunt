@@ -792,13 +792,6 @@ func getTerragruntOutputJSON(ctx *ParsingContext, l log.Logger, targetConfig str
 		return runTerragruntOutputJSON(ctx, l, targetConfig)
 	}
 
-	// In optimization mode, see if there is already an init-ed folder that terragrunt can use, and if so, run
-	// `terraform output` in the working directory.
-	isInit, workingDir, err := terragruntAlreadyInit(l, targetTGOptions, targetConfig, ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	// Fetch engine options so they can be passed to the dependency functions
 	engineOpts, err := remoteStateTGConfig.EngineOptions()
 	if err != nil {
@@ -806,6 +799,35 @@ func getTerragruntOutputJSON(ctx *ParsingContext, l log.Logger, targetConfig str
 	}
 
 	ctx.TerragruntOptions.Engine = engineOpts
+
+	// To speed up dependencies processing it is possible to retrieve its output directly from the backend without init dependencies
+	if ctx.TerragruntOptions.FetchDependencyOutputFromState {
+		switch backend := remoteStateTGConfig.RemoteState.BackendName; backend {
+		case s3backend.BackendName:
+			jsonBytes, err := getTerragruntOutputJSONFromRemoteStateS3(
+				ctx,
+				l,
+				targetTGOptions,
+				remoteStateTGConfig.RemoteState,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			l.Debugf("Retrieved output from %s as json: %s using s3 bucket", targetTGOptions.TerragruntConfigPath, jsonBytes)
+
+			return jsonBytes, nil
+		default:
+			l.Errorf("FetchDependencyOutputFromState is not supported for backend %s, falling back to normal method", backend)
+		}
+	}
+
+	// In optimization mode, see if there is already an init-ed folder that terragrunt can use, and if so, run
+	// `terraform output` in the working directory.
+	isInit, workingDir, err := terragruntAlreadyInit(l, targetTGOptions, targetConfig, ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	if isInit {
 		return getTerragruntOutputJSONFromInitFolder(ctx, l, workingDir, remoteStateTGConfig.GetIAMRoleOptions())
@@ -938,28 +960,6 @@ func getTerragruntOutputJSONFromRemoteState(
 	}
 
 	ctx = ctx.WithTerragruntOptions(targetTGOptions)
-
-	// To speed up dependencies processing it is possible to retrieve its output directly from the backend without init dependencies
-	if ctx.TerragruntOptions.FetchDependencyOutputFromState {
-		switch backend := remoteState.BackendName; backend {
-		case s3backend.BackendName:
-			jsonBytes, err := getTerragruntOutputJSONFromRemoteStateS3(
-				ctx,
-				l,
-				targetTGOptions,
-				remoteState,
-			)
-			if err != nil {
-				return nil, err
-			}
-
-			l.Debugf("Retrieved output from %s as json: %s using s3 bucket", targetTGOptions.TerragruntConfigPath, jsonBytes)
-
-			return jsonBytes, nil
-		default:
-			l.Errorf("FetchDependencyOutputFromState is not supported for backend %s, falling back to normal method", backend)
-		}
-	}
 
 	// Generate the backend configuration in the working dir. If no generate config is set on the remote state block,
 	// set a temporary generate config so we can generate the backend code.
